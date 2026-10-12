@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>WorldConquest — Guerra de Nações 2D</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ============ TELA DE SETUP ============ -->
+<div id="setupScreen" class="screen" style="display:none">
+  <div class="setup-card">
+    <h1>🌍 World<span class="accent">Conquest</span></h1>
+    <p class="sub">Escolha seu nome, sua era e seu sistema de governo. Clique no mapa para escolher onde nascer (até 3 regiões) — ou deixe aleatório.</p>
+
+    <label class="lbl">Nome da nação</label>
+    <div class="row">
+      <input id="pname" type="text" maxlength="24" placeholder="Minha Nação" />
+      <button id="randomName" title="Nome aleatório">🎲</button>
+    </div>
+
+    <label class="lbl">Ano de nascimento: <span id="yearLabel"></span></label>
+    <input id="yearSlider" type="range" />
+
+    <label class="lbl">Sistema de governo inicial</label>
+    <div id="govPicker" class="govpicker"></div>
+
+    <label class="lbl">Local de nascimento <small>(clique no mapa abaixo)</small></label>
+    <canvas id="previewCanvas" width="640" height="320"></canvas>
+
+    <button id="btnStart" class="big-btn">⚔️ COMEÇAR CONQUISTA</button>
+  </div>
+</div>
+
+<!-- ============ JOGO ============ -->
+<canvas id="map"></canvas>
+
+<div id="hud" style="display:none">
+  <div class="hud-left">
+    <div class="hud-box"><span class="k">📅</span><b id="hudYear">—</b> <small id="hudEra"></small></div>
+    <div class="hud-box"><span class="k">💰</span><b id="hudMoney">0</b></div>
+    <div class="hud-box"><span class="k">👥</span><b id="hudPop">0</b></div>
+    <div class="hud-box"><span class="k">⚔️</span><b id="hudArmy">0</b></div>
+    <div id="resBar" class="hud-box resbar"></div>
+    <div id="researchNow" class="hud-box smallbox">Pesquisa ociosa</div>
+  </div>
+  <div class="hud-right">
+    <div id="speedBtns" class="speedbtns">
+      <button>🐢</button><button class="active">▶</button><button>⏩</button><button>⏭</button>
+    </div>
+    <button id="centerCapital" class="icon-btn" title="Centralizar na capital">🏛️</button>
+    <button id="openPanelBtn" class="icon-btn" title="Painel">📜</button>
+  </div>
+</div>
+
+<canvas id="minimap" width="240" height="120"></canvas>
+
+<!-- painel lateral -->
+<div id="sidePanel" class="panel">
+  <div class="panel-head">
+    <button id="tabTech" class="tab active">🔬 Tecnologia</button>
+    <button id="tabGov" class="tab">🏛️ Governo</button>
+    <button id="tabLog" class="tab">📰 Eventos</button>
+    <button id="closePanel">✕</button>
+  </div>
+  <div class="panel-body">
+    <div id="regionInfo" class="regioninfo"></div>
+    <div id="panelTech" class="tabpane"></div>
+    <div id="panelGov" class="tabpane" style="display:none"></div>
+    <div id="panelLog" class="tabpane" style="display:none"></div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<div id="endScreen" class="screen" style="display:none">
+  <div class="setup-card center-card">
+    <h1 id="endTitle">🏆 VITÓRIA!</h1>
+    <p id="endSub"></p>
+    <button id="btnRestart" class="big-btn">Jogar novamente</button>
+  </div>
+</div>
+
+<script>window.gameConfig = { base: './' };</script>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
