@@ -82,18 +82,30 @@ export const GOS = [
 // ---------------- ERAS / PAÍSES HISTÓRICOS POR ANO ----------------
 // Cada entrada: regiões que "existem" como nações naquele ano (agressividade/tech inicial).
 // Simples e robusto: usamos um fator global de civilização por era + bônus regionais.
+// 8 ERAS: Primitiva → Futurista
+export const ERAS = [
+  { key: 'primitiva',     label: 'Era Primitiva',      icon: '🪵', from: -10000, techPower: 0.03, milBase: 4,  incBase: 0.3 },
+  { key: 'antiga',        label: 'Idade Antiga',       icon: '🏛️', from: -3000,  techPower: 0.07, milBase: 7,  incBase: 0.55 },
+  { key: 'classica',      label: 'Idade Clássica',   icon: '⚔️', from: -1200,  techPower: 0.15, milBase: 11, incBase: 0.85 },
+  { key: 'medieval',      label: 'Idade Média',      icon: '🏰', from: 500,    techPower: 0.28, milBase: 17, incBase: 1.25 },
+  { key: 'moderna',       label: 'Era Moderna',        icon: '📜', from: 1500,   techPower: 0.45, milBase: 27, incBase: 1.85 },
+  { key: 'industrial',    label: 'Era Industrial',     icon: '🏭', from: 1800,   techPower: 0.65, milBase: 43, incBase: 2.85 },
+  { key: 'contemporanea', label: 'Era Contemporânea', icon: '💻', from: 1915,   techPower: 0.83, milBase: 63, incBase: 4.3 },
+  { key: 'futurista',     label: 'Era Futurista',      icon: '🛰️', from: 2000,   techPower: 1.05, milBase: 90, incBase: 6.5 },
+];
+export function eraIndex(year) {
+  let idx = 0;
+  for (let i = 0; i < ERAS.length; i++) if (year >= ERAS[i].from) idx = i;
+  return idx;
+}
 export function eraInfo(year) {
-  if (year < -1200) return { key: 'antiga', label: 'Idade Antiga', techPower: 0.06, milBase: 6, incBase: 0.5 };
-  if (year < 500) return { key: 'classica', label: 'Idade Clássica', techPower: 0.14, milBase: 10, incBase: 0.8 };
-  if (year < 1500) return { key: 'medieval', label: 'Idade Média', techPower: 0.28, milBase: 16, incBase: 1.2 };
-  if (year < 1800) return { key: 'moderna', label: 'Início da Era Moderna', techPower: 0.45, milBase: 26, incBase: 1.8 };
-  if (year < 1915) return { key: 'industrial', label: 'Era Industrial', techPower: 0.65, milBase: 42, incBase: 2.8 };
-  if (year < 1991) return { key: 'contemporanea', label: 'Era Contemporânea', techPower: 0.82, milBase: 62, incBase: 4.2 };
-  return { key: 'moderna2', label: 'Era Digital', techPower: 1.0, milBase: 85, incBase: 6.0 };
+  const e = ERAS[eraIndex(year)];
+  return { key: e.key, label: e.icon + ' ' + e.label, plainLabel: e.label, techPower: e.techPower, milBase: e.milBase, incBase: e.incBase };
 }
 
 // países "fortes" por época (nomes do geojson) -> ganham mais tech inicial
 const POWER_BY_ERA = {
+  primitiva: [],
   antiga: ['Egypt', 'Greece', 'Persia', 'China', 'India', 'Rome', 'Italy', 'Turkey', 'Iraq', 'Iran'],
   classica: ['Rome', 'Italy', 'China', 'India', 'Persia', 'Iran', 'Greece', 'Turkey', 'France', 'Spain'],
   medieval: ['France', 'England', 'Spain', 'Italy', 'Turkey', 'China', 'India', 'Persia', 'Iran', 'Germany', 'Russia', 'Egypt', 'Mongolia'],
@@ -101,6 +113,7 @@ const POWER_BY_ERA = {
   industrial: ['United States of America', 'Germany', 'United Kingdom', 'England', 'France', 'Russia', 'Japan', 'Italy', 'Belgium', 'Netherlands'],
   contemporanea: ['United States of America', 'Russia', 'China', 'Germany', 'Japan', 'United Kingdom', 'England', 'France', 'India'],
   moderna2: ['United States of America', 'China', 'Russia', 'Germany', 'Japan', 'United Kingdom', 'England', 'France', 'India', 'Brazil', 'South Korea', 'Canada'],
+  futurista: ['United States of America', 'China', 'Russia', 'Germany', 'Japan', 'India', 'United Kingdom'],
 };
 export function eraBonus(countryName, eraKey) {
   const list = POWER_BY_ERA[eraKey] || [];

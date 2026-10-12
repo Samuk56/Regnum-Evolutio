@@ -1,8 +1,23 @@
 // ==================== ENGINE DO JOGO ====================
-import { TECHS, GOS, eraInfo, eraBonus, COLORS } from './data.js';
+import { TECHS, GOS, eraInfo, eraBonus } from './data.js';
+import { distinctColors } from './render.js';
 
 const TECH_BY_ID = {}; TECHS.forEach(t => TECH_BY_ID[t.id] = t);
 const GOV_BY_ID = {}; GOS.forEach(g => GOV_BY_ID[g.id] = g);
+
+// bandeira estilizada (SVG data-URI) a partir de 2 cores + icone
+export function makeFlag(colorA, colorB, icon) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="60" height="40">
+<rect width="60" height="40" fill="${colorB}"/>
+<rect width="60" height="20" fill="${colorA}"/>
+<rect x="0" y="18" width="60" height="4" fill="#ffffff" opacity="0.85"/>
+<text x="30" y="27" font-size="14" text-anchor="middle">${icon || '🏳️'}</text>
+</svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+// icones por tipo de territorio (bandeira estilizada)
+const BIOME_ICON = { tundra: '❄️', boreal: '🌲', temperate: '🌾', desert: '🏜️', tropical: '🌴', steppe: '🐎' };
 
 export class Game {
   constructor(world) {
@@ -63,22 +78,97 @@ export class Game {
       capital: startRegions[0],
       foundedYear: year,
       morale: 0.7,
+      stability: 60 + Math.random() * 25,   // 0..100
+      taxRate: 0.25,                        // 0..0.6
+      eduPct: 0.2, defPct: 0.2, socPct: 0.15, // % da renda alocada (educacao/defesa/social)
+      allies: new Set(), rivals: new Set(), tradePartners: new Set(),
+      claims: new Set(),
       hasCurrency: false,
+      cx: this.regions[startRegions[0]]?.cx || 0,
+      cy: this.regions[startRegions[0]]?.cy || 0,
+      cells: 0,
     };
     if (!this.countries) this.countries = [];
     this.countries.push(c);
     for (const r of startRegions) {
       this.owner[r] = c.id;
       this.army[r] = (era.milBase * (0.5 + Math.random())) * (era.techPower + 0.3);
+      const reg = this.regions[r];
+      if (reg) c.claims.add(`${reg.continent}|${reg.country}`);
     }
     this.recalcPop(c);
+    // bandeira estilizada: cor propria + cor complementar + icone do bioma da capital
+    const capBiome = this.regions[startRegions[0]]?.biome || 'temperate';
+    c.flagIcon = isPlayer ? '⭐' : BIOME_ICON[capBiome] || '🏳️';
+    c.flag = makeFlag(color, '#1d3557', c.flagIcon);
     return c;
   }
 
+  // ---------- cores dos paises: cada pais vizinho recebe cor distinta ----------
+  assignCountryColors() {
+    const n = this.countries.length;
+    const palette = distinctColors(n, 42);
+    // grafo de adjacencia entre paises
+    const adj = this.countries.map(() => new Set());
+    for (let r = 0; r < this.nR; r++) {
+      const a = this.owner[r];
+      if (a < 0) continue;
+      for (const nb of this.regions[r].neighbors) {
+        const b = this.owner[nb];
+        if (b >= 0 && b !== a) { adj[a].add(b); adj[b].add(a); }
+      }
+    }
+    // coloracao gulosa por tamanho (paises maiores primeiro), evitando conflitos
+    const order = this.countries.map((c, i) => i)
+      .sort((x, y) => this.countries[y].cells - this.countries[x].cells);
+    const usedHue = new Map(); // cid -> hue
+    const hueOf = (hex) => {
+      const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+      if (!d) return -1;
+      let h = d ? (mx === r ? ((g - b) / d + (g < b ? 6 : 0)) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4) : 0;
+      return h * 60;
+    };
+    const dist = this.countries.map(() => 0); // distancia em celulas ate territorio do jogador
+    for (const i of order) {
+      const banned = new Set();
+      for (const j of adj[i]) if (usedHue.has(j)) banned.add(Math.round(hueOf(palette[this.countries[j]._colorIdx ?? 0])));
+      // escolhe o indice de paleta cujo hue esta mais distante dos vizinhos
+      let best = 0, bestScore = -1;
+      for (let k = 0; k < n; k++) {
+        const h = hueOf(palette[k]);
+        let score = 1e9;
+        for (const bh of banned) {
+          const dh = Math.abs(h - bh); score = Math.min(score, Math.min(dh, 360 - dh));
+        }
+        if (score > bestScore) { bestScore = score; best = k; }
+      }
+      this.countries[i].color = palette[best];
+      this.countries[i]._colorIdx = best;
+      usedHue.set(i, hueOf(palette[best]));
+      const capB = this.regions[this.countries[i].capital]?.biome || 'temperate';
+      this.countries[i].flag = makeFlag(this.countries[i].color, '#1d3557', this.countries[i].flagIcon || BIOME_ICON[capB]);
+    }
+  }
+
   recalcPop(c) {
-    let n = 0;
-    for (let r = 0; r < this.nR; r++) if (this.owner[r] === c.id) n += this.regionCells[r].length;
-    c.pop = n;
+    let n = 0, sx = 0, sy = 0;
+    for (let r = 0; r < this.nR; r++) if (this.owner[r] === c.id) {
+      n += this.regionCells[r].length;
+      sx += this.regions[r].cx * this.regionCells[r].length;
+      sy += this.regions[r].cy * this.regionCells[r].length;
+    }
+    // população cresce independentemente do território: mantém densidade por célula.
+    // Quando conquista terras, ganha pop proporcional à densidade média local.
+    const prevCells = c.cells || 0;
+    if (prevCells > 0 && c.pop > 0 && n !== prevCells) {
+      const perCell = c.pop / prevCells;
+      c.pop = n * perCell;
+    } else if (!prevCells) {
+      c.pop = n;
+    }
+    c.cells = n;
+    if (n > 0) { c.cx = sx / n; c.cy = sy / n; }
   }
 
   // ---------- estatisticas derivadas ----------
@@ -131,8 +221,21 @@ export class Game {
   income(c) {
     const m = this.effMods(c);
     const era = this.era;
-    const base = c.pop * era.incBase * 0.35 * (1 + m.income + m.prod * 0.5);
+    const stabMul = 0.5 + (c.stability ?? 60) / 100;            // instabilidade reduz renda
+    const taxMul = 0.55 + (c.taxRate ?? 0.25) * 1.4;            // impostos financiam o Estado
+    const base = c.pop * era.incBase * 0.35 * (1 + m.income + m.prod * 0.5) * stabMul * taxMul;
     return base;
+  }
+
+  // crescimento populacional efetivo (com políticas)
+  growthRate(c) {
+    const m = this.effMods(c);
+    let g = 0.004 * (1 + m.growth);
+    g += (c.eduPct ?? 0.2) * 0.004 + (c.socPct ?? 0.15) * 0.005; // educação e saúde aumentam
+    g -= Math.max(0, (c.taxRate ?? 0.25) - 0.35) * 0.012;        // impostos altos freiam
+    g *= 0.6 + (c.stability ?? 60) / 100 * 0.6;
+    if (c.atWarWith.size) g -= 0.002 * c.atWarWith.size;         // guerras matam/reduzem
+    return g;
   }
 
   researchRate(c) {
@@ -140,7 +243,9 @@ export class Game {
     const gov = GOV_BY_ID[c.gov];
     if (gov && gov.locked) return 0;
     if (c.gov === 'anarchoCapitalism' && !c.hasCurrency) return 0.5; // quase nada sem moeda
-    return (2 + c.pop * 0.012) * (1 + m.research) * (0.6 + this.era.techPower * 0.6);
+    const edu = 1 + (c.eduPct || 0.2) * 0.9;   // educação acelera pesquisa
+    const stab = 0.6 + (c.stability ?? 60) / 100 * 0.6;
+    return (2 + c.pop * 0.012) * (1 + m.research) * edu * stab * (0.6 + this.era.techPower * 0.6);
   }
 
   // disponibilidade historica de tech
@@ -238,6 +343,8 @@ export class Game {
   landOK(r) { return this.regions[r] && !this.regions[r].start; }
 
   attackFrom(c, fromR, toR) {
+    // apenas o JOGADOR ataca diretamente; a IA usa suas proprias decisoes
+    if (!c.isPlayer && !this.aiAttackAllowed) return false;
     const defOwner = this.owner[toR];
     if (defOwner < 0) return false;
     const d = this.countries[defOwner];
@@ -250,7 +357,18 @@ export class Game {
       this.army[toR] = 0;
       const prev = this.owner[toR];
       this.owner[toR] = c.id;
+      // se o jogador capturou a regiao da propria capital, move a capital
+      if (c.isPlayer && c.capital === toR) {}
+      if (c.isPlayer && this.regions[c.capital] && this.owner[c.capital] !== c.id) {
+        // capital perdida: move para o maior territorio restante
+        let best = c.capital, bs = -1;
+        for (let r = 0; r < this.nR; r++) if (this.owner[r] === c.id && this.regionCells[r].length > bs) { bs = this.regionCells[r].length; best = r; }
+        c.capital = best;
+      }
       this.recalcPop(c); this.recalcPop(d);
+      d.stability = Math.max(5, d.stability - 6);
+      d._lastWarLossYear = this.year;
+      c.stability = Math.max(5, c.stability - 2); // custo da conquista
       this.addLog(`⚔️ ${c.name} capturou ${this.regions[toR].name} de ${this.countries[prev].name}!`);
       if (!d.isPlayer && this.checkEliminated(d)) {}
       if (prev === (this.player && this.player.id)) this.onPlayerLoss?.(toR);
@@ -288,6 +406,14 @@ export class Game {
     const m = this.effMods(c);
     const inc = this.income(c);
     c.treasury += inc * 0.08;
+    // IA ajusta políticas economicas ocasionalmente conforme personalidade
+    if (Math.random() < 0.01) {
+      c.taxRate = Math.max(0.05, Math.min(0.55, c.taxRate + (Math.random() - 0.45) * 0.08));
+      if (c.aiPersonality === 'defensive') c.defPct = Math.min(0.45, c.defPct + 0.02);
+      if (c.aiPersonality === 'opportunist') c.eduPct = Math.min(0.45, c.eduPct + 0.02);
+    }
+    // comércio gera renda extra por parceiro
+    c.treasury += c.tradePartners.size * inc * 0.006;
 
     // pesquisa
     if (!c.researching) {
@@ -335,27 +461,49 @@ export class Game {
       if (d.atWarWith.has(c.id)) continue; // ja em guerra => ataques continuam abaixo
       const mA = this.army[fromR] * (1 + m.power);
       const mD = this.army[toR] * (1 + this.effMods(d).power + this.effMods(d).defense) * 1.25;
+      if (this.areAllies(c, d)) continue;                       // aliado: nunca atacar
+      if (d.isPlayer) {                          // não declarar guerra ao jogador se ele tem aliados fortes ou paz recente
+        if (this.year - (this._lastPlayerWarEnd || -1e9) < 15) continue;
+        for (const al of c.allies) { /* aliados da IA também pesam */ }
+      }
       const weak = d.armyPool + this.frontArmies(d) < this.frontArmies(c) * 0.8;
       const rich = this.income(d) > this.income(c) * 1.3;
       let desire = 0;
       if (mA > mD * 1.35) desire += 0.5;
       if (weak && c.aiPersonality === 'opportunist') desire += 0.4;
       if (rich && c.aiPersonality === 'aggressive') desire += 0.3;
+      if (c.rivals.has(d.id) || d.rivals.has(c.id)) desire += 0.45;
       desire *= c.aggression;
       if (desire > 0.35 && Math.random() < 0.05) {
         c.atWarWith.add(d.id); d.atWarWith.add(c.id);
         this.addLog(`📢 ${c.name} declarou guerra a ${d.name}!`);
       }
     }
-    // executar ataques nas fronteiras em guerra
+    // executar ataques nas fronteiras em guerra (a IA sempre pode atacar;
+    // o jogador e protegido: so perde regioes por decisao propria via "Defender")
+    this.aiAttackAllowed = true;
     for (const [fromR, toR] of borders) {
       const d = this.countries[this.owner[toR]];
       if (!d || !d.alive) continue;
+      if (this.areAllies(c, d)) continue;               // nunca atacar aliado
+      if (d.isPlayer && !this.playerDefending) continue; // jogador nao e conquistado passivamente
       if (c.atWarWith.has(d.id) || d.atWarWith.has(c.id)) {
         if (this.army[fromR] > this.army[toR] * 1.15 && this.army[fromR] > 2) {
           this.attackFrom(c, fromR, toR);
         }
       }
+    }
+    this.aiAttackAllowed = false;
+    // diplomacia autônoma: alianças e comércio entre potências vizinhas
+    if (Math.random() < 0.006 && c.allies.size < 3) {
+      const nbrCids = new Set();
+      for (const [fromR, toR] of borders) nbrCids.add(this.owner[toR]);
+      const cand = [...nbrCids].filter(o => o >= 0 && o !== c.id && !c.atWarWith.has(o) && this.countries[o]?.alive);
+      if (cand.length) this.proposeAlliance(c, this.countries[cand[Math.floor(Math.random() * cand.length)]]);
+    }
+    if (Math.random() < 0.008 && c.tradePartners.size < 5) {
+      const others = this.countries.filter(o => o.alive && o.id !== c.id && !c.atWarWith.has(o.id) && !c.rivals.has(o.id));
+      if (others.length) this.proposeTrade(c, others[Math.floor(Math.random() * others.length)]);
     }
     // paz ocasional se perdendo muito
     if (c.atWarWith.size && Math.random() < 0.01) {
@@ -381,32 +529,176 @@ export class Game {
     return s;
   }
 
-  // ---------- expansao neutra ----------
+  // ---------- expansao neutra (com diplomacia: paises "reivindicam" suas regioes nativas) ----------
+  claimKey(r) {
+    const reg = this.regions[r];
+    return reg ? `${reg.continent}|${reg.country}` : null;
+  }
+
   expandNeutral() {
-    const adds = [];
+    // candidatos: regioes sem dono, nao-antarticas
+    const cands = [];
     for (let r = 0; r < this.nR; r++) {
       if (this.owner[r] !== -1 || !this.landOK(r)) continue;
-      let best = -1, bc = 0;
-      for (const n of this.regions[r].neighbors) {
-        const o = this.owner[n];
-        if (o >= 0) { if (o > best) { best = o; } }
-      }
-      if (best >= 0) adds.push([r, best]);
+      cands.push(r);
     }
-    if (!adds.length) return;
-    const [, cid] = adds[Math.floor(Math.random() * adds.length)];
-    const [r] = adds[Math.floor(Math.random() * adds.length)];
+    if (!cands.length) return;
+    const r = cands[Math.floor(Math.random() * cands.length)];
+    // vizinhos com dono
+    const nbrs = [];
+    for (const n of this.regions[r].neighbors) if (this.owner[n] >= 0) nbrs.push(this.owner[n]);
+    if (!nbrs.length) return;
+    // prioridade 1: pais que reivindica essa regiao nativa (mesmo continente + nome geojson)
+    const key = this.claimKey(r);
+    let cid = -1;
+    for (const o of nbrs) {
+      const c = this.countries[o];
+      if (c && c.claims && c.claims.has(key)) { cid = o; break; }
+    }
+    // senao: menor entre os vizinhos (expansao natural dos fracos/medios)
+    if (cid < 0) {
+      cid = nbrs.reduce((a, b) => (this.countries[b].cells < this.countries[a].cells ? b : a));
+    }
     this.owner[r] = cid;
     this.army[r] = 2 + Math.random() * 4;
     this.recalcPop(this.countries[cid]);
   }
 
+  // ---------- DIPLOMACIA ----------
+  areAllies(a, b) { return a.allies.has(b.id) && b.allies.has(a.id); }
+  hasPact(a, b) { return this.areAllies(a, b) || a.tradePartners.has(b.id); }
+
+  proposeAlliance(c, other) {
+    if (!other.alive || other.id === c.id) return false;
+    if (this.areAllies(c, other)) return true;
+    if (c.rivals.has(other.id) || other.rivals.has(c.id)) return false;
+    const score = this.income(other) / Math.max(1, this.income(c));
+    const openness = 0.25 + (other.stability / 100) * 0.4 + (this.effMods(other).admin || 0) * 0.2;
+    if (Math.random() < openness * (score > 3 ? 0.6 : 1)) {
+      c.allies.add(other.id); other.allies.add(c.id);
+      c.atWarWith.delete(other.id); other.atWarWith.delete(c.id);
+      this.addLog(`🤝 Aliança firmada: ${c.name} e ${other.name}!`);
+      return true;
+    }
+    this.addLog(`❌ ${other.name} recusou a aliança com ${c.name}.`);
+    return false;
+  }
+
+  proposeTrade(c, other) {
+    if (!other.alive || other.id === c.id) return false;
+    if (c.rivals.has(other.id) || other.rivals.has(c.id) || c.atWarWith.has(other.id)) return false;
+    if (other.tradePartners.has(c.id)) return true;
+    if (Math.random() < 0.55 + (other.gov === 'liberalCapitalism' || other.gov === 'republic' ? 0.2 : 0)) {
+      other.tradePartners.add(c.id); c.tradePartners.add(other.id);
+      this.addLog(`📦 Tratado comercial: ${c.name} ↔ ${other.name}.`);
+      return true;
+    }
+    this.addLog(`❌ ${other.name} recusou o tratado comercial.`);
+    return false;
+  }
+
+  makePeace(c, other, forced = false) {
+    if (!c.atWarWith.has(other.id)) return false;
+    if (!forced) {
+      // chance de aceitar paz depende do cansaço e força relativa
+      const weariness = (GOV_BY_ID[other.gov]?.warWeariness || 0) + (other.stability < 45 ? 0.4 : 0);
+      const ratio = this.frontArmies(other) / Math.max(1, this.frontArmies(c));
+      const p = 0.2 + weariness + (ratio < 0.7 ? 0.35 : 0);
+      if (Math.random() > Math.min(0.9, p)) { this.addLog(`❌ ${other.name} quer continuar a guerra.`); return false; }
+    }
+    c.atWarWith.delete(other.id); other.atWarWith.delete(c.id);
+    this.addLog(`🕊️ Paz assinada entre ${c.name} e ${other.name}.`);
+    return true;
+  }
+
+  declareRivalry(c, other) {
+    if (!other.alive) return false;
+    c.rivals.add(other.id); other.rivals.add(c.id);
+    c.allies.delete(other.id); other.allies.delete(c.id);
+    c.tradePartners.delete(other.id); other.tradePartners.delete(c.id);
+    this.addLog(`😡 ${c.name} declarou ${other.name} como RIVAL.`);
+    return true;
+  }
+
+  breakAlliance(c, other) {
+    c.allies.delete(other.id); other.allies.delete(c.id);
+    this.addLog(`💔 ${c.name} rompeu a aliança com ${other.name}.`);
+    this.declareRivalry(c, other);
+  }
+
+  // ---------- AÇÕES DO JOGADOR ----------
+  recruitPlayer(amount) {
+    const p = this.player;
+    const gov = GOV_BY_ID[p.gov];
+    if (gov && gov.locked) { this.notify?.('Sem Estado — impossível recrutar.'); return false; }
+    const cost = this.recruitCost(p) * amount;
+    if (p.treasury < cost) { this.notify?.('💰 Tesouro insuficiente!'); return false; }
+    this.trainArmy(p, amount);
+    this.notify?.(`⚔️ ${amount} soldados recrutados (${Math.round(cost)} de ouro).`);
+    return true;
+  }
+
+  setTax(v) { this.player.taxRate = Math.max(0, Math.min(0.6, v)); }
+  setPolicy(key, v) { this.player[key] = Math.max(0, Math.min(0.5, v)); }
+
+  buildInfrastructure() {
+    const p = this.player;
+    const cost = Math.round(80 + p.cells * 1.5 + this.era.incBase * 40);
+    if (p.treasury < cost) { this.notify?.('💰 Tesouro insuficiente para infraestrutura.'); return false; }
+    p.treasury -= cost;
+    p._infra = (p._infra || 0) + 1;
+    p.stability = Math.min(100, p.stability + 3);
+    this.addLog(`🏗️ ${p.name} investiu em infraestrutura (+produção local).`);
+    this.notify?.(`🏗️ Infraestrutura construída! (${cost} de ouro)`);
+    return true;
+  }
+
+  // ---------- ESTABILIDADE ----------
+  updateStability(c, dtYears) {
+    const gov = GOV_BY_ID[c.gov];
+    let target = 55;
+    target += (c.socPct || 0) * 60;          // políticas sociais acalmam o povo
+    target -= Math.max(0, (c.taxRate || 0.25) - 0.3) * 90; // impostos altos irritam
+    if (gov) target += (gov.mods.liberty || 0) * 25 + (gov.mods.equal || 0) * 15 - (gov.mods.unrest || 0) * 40;
+    if (c.atWarWith.size) target -= 8 * c.atWarWith.size;
+    if (c.treasury <= 0) target -= 20;
+    if (this.year - (c._lastWarLossYear || -1e9) < 8) target -= 10;
+    c.stability += (target - c.stability) * Math.min(1, 0.05 * dtYears);
+    c.stability = Math.max(5, Math.min(100, c.stability));
+    if (c.stability < 22 && Math.random() < 0.004 * dtYears) {
+      // revolta popular: perde uma região de fronteira aleatória
+      const own = [];
+      for (let r = 0; r < this.nR; r++) if (this.owner[r] === c.id && r !== c.capital) own.push(r);
+      if (own.length > 1) {
+        const lost = own[Math.floor(Math.random() * own.length)];
+        this.owner[lost] = -1; this.army[lost] = 1;
+        this.recalcPop(c);
+        this.addLog(`✊ Revolta popular em ${c.name}: ${this.regions[lost].name} tornou-se instável!`);
+        if (c.isPlayer) this.notify?.(`✊ Revolta! ${this.regions[lost].name} rebelou-se.`);
+      }
+    }
+  }
+
   // ---------- tick global ----------
   step(dtYears) {
     if (this.finished) return;
+    if (!this._aiAccum) this._aiAccum = 0;
     this.year += dtYears;
     this.era = eraInfo(this.year);
     this.tickCount++;
+
+    // renda automática do jogador (a IA recebe no próprio turno)
+    if (this.player?.alive) {
+      const govP = GOV_BY_ID[this.player.gov];
+      if (!(govP && govP.locked)) this.player.treasury += this.income(this.player) * dtYears * 0.08;
+    }
+    // crescimento populacional + estabilidade de todas as nações
+    for (const c of this.countries) {
+      if (!c.alive || !c.cells) continue;
+      const g = this.growthRate(c);
+      c.pop = Math.max(1, c.pop * (1 + g * dtYears));
+      this.updateStability(c, dtYears);
+    }
 
     // manutencao + renda dos jogadores/IA passiva
     for (const c of this.countries) {
@@ -437,13 +729,16 @@ export class Game {
       }
     }
 
-    // turnos de IA (alternados para custo baixo)
+    // turnos de IA: cada nação age a cada ~2 anos de jogo
     const ais = this.countries.filter(c => c.alive && !c.isPlayer);
     if (ais.length) {
-      const idx = this.tickCount % ais.length;
-      this.aiTurn(ais[idx]);
-      // segunda metade do tick pra outro AI em ticks pares
-      if (this.tickCount % 2 === 0 && ais.length > 1) this.aiTurn(ais[(idx + 1) % ais.length]);
+      this._aiAccum += dtYears;
+      let guard = 0;
+      while (this._aiAccum >= 2 && guard++ < 4) {
+        this._aiAccum -= 2;
+        for (let k = 0; k < ais.length; k++) this.aiTurn(ais[(this.tickCount + k) % ais.length]);
+      }
+      if (guard >= 4) this._aiAccum = 0;
     }
 
     // expansao de nações sobre terras sem dono
