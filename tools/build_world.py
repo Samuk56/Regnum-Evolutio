@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Gera src/assets/world.json a partir de tools/world.geo.json (Natural Earth).
 
-- Grade 240x120 celulas equiretangular (lon -180..180, lat 90..-60)
+- Grade alta resolucao (default 720x360 = 2 graus/celula; use --w 1000 para ~500+)
 - Cada pais vira uma REGIAO; ilhas desconectadas viram regioes proprias
 - Recursos naturais por bioma/continente com pesos + seed fixa
 - Antartida: regiao "inicial" neutra (nao pintavel); oceano idem
 Saida: src/assets/world.json + preview.png
-Uso: python3 tools/build_world.py [--seed N]
+Uso: python3 tools/build_world.py [--seed N] [--w 720] [--min-cells 12]
 Requer: pillow
 """
 import argparse, json, math, os, random
@@ -16,11 +16,18 @@ ROOT = os.path.dirname(BASE)
 ASSETS = os.path.join(ROOT, 'src', 'assets')
 os.makedirs(ASSETS, exist_ok=True)
 
-W, H = 240, 120
+ap_early = argparse.ArgumentParser(add_help=False)
+ap_early.add_argument('--w', type=int, default=None)
+_pre, _ = ap_early.parse_known_args()
+W = _pre.w if _pre.w else 720    # colunas (largura do mapa em celulas)
+H = max(1, int(round(W * 0.5)))  # proporcao 2:1
 CELL_ARC = 360.0 / W
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--seed', type=int, default=7)
+ap.add_argument('--w', type=int, default=720)
+ap.add_argument('--min-cells', type=int, default=None,
+                help='celulas minimas por regiao (default: proporcional a resolucao)')
 args = ap.parse_args()
 rng = random.Random(args.seed)
 
@@ -110,7 +117,7 @@ for cy in range(H):
         if region_of[cy][cx] >= 0:
             region_of[cy][cx] = -1
 
-MIN_CELLS = 3
+MIN_CELLS = args.min_cells if args.min_cells is not None else max(3, int(round(W * H * 3.0 / (240 * 120))))
 filtered = []
 for rid, r in enumerate(regions):
     if len(r['cells']) >= MIN_CELLS:
@@ -124,6 +131,59 @@ ANTARCTICA_NAME = 'Antarctica'
 for r in regions:
     nm = country_meta[r['country']]['name']
     r['start'] = (nm == ANTARCTICA_NAME)
+
+# ---------------- continentes (classificacao por bounding box + heuristica) ----------------
+CONTINENT_OVERRIDES = {
+    'Greenland': 'northamerica', 'Iceland': 'europe',
+    'United States of America': 'northamerica', 'Canada': 'northamerica', 'Mexico': 'northamerica',
+    'Australia': 'oceania', 'New Zealand': 'oceania', 'Papua New Guinea': 'oceania', 'Fiji': 'oceania',
+    'Solomon Is.': 'oceania', 'Vanuatu': 'oceania', 'New Caledonia': 'oceania',
+}
+
+def classify_continent(name, lons, lats):
+    if name in CONTINENT_OVERRIDES:
+        return CONTINENT_OVERRIDES[name]
+    lon = sum(lons) / len(lons); lat = sum(lats) / len(lats)
+    w, e = min(lons), max(lons); s, n = min(lats), max(lats)
+    # Russia / Turkiye / Kazakhstan etc. => Europa (padrao politico simples)
+    if name in ('Russia', 'Turkey', 'Kazakhstan', 'Georgia', 'Azerbaijan'):
+        return 'europe'
+    if name in ('Egypt',):  # Africa (Sinai pequeno)
+        return 'africa'
+    if name in ('Saudi Arabia', 'Yemen', 'Oman', 'United Arab Emirates', 'Qatar', 'Bahrain',
+                'Kuwait', 'Iraq', 'Iran', 'Israel', 'Jordan', 'Lebanon', 'Syria', 'Palestine',
+                'West Bank', 'Gaza Strip', 'Afghanistan', 'Pakistan', 'India', 'Bangladesh',
+                'Sri Lanka', 'Nepal', 'Bhutan', 'Myanmar', 'Thailand', 'Vietnam', 'Laos',
+                'Cambodia', 'Malaysia', 'China', 'Mongolia', 'North Korea', 'South Korea',
+                'Taiwan', 'Japan', 'Philippines', 'Brunei', 'Indonesia', 'East Timor',
+                'Timor-Leste', 'Uzbekistan', 'Turkmenistan', 'Tajikistan', 'Kyrgyzstan'):
+        return 'asia'
+    if name in ('Antarctica',):
+        return 'antarctica'
+    # heuristica por centroide
+    if lat < -45: return 'antarctica'
+    if lat > 12 and lon < -30: return 'northamerica'
+    if lat <= 12 and lon < -30 or (lat < 13 and lon < -34 and e < -34): return 'southamerica'
+    if lon >= -30 and lon < 60 and lat > 34: return 'europe'
+    if lon >= -30 and lat <= 34 and n > 12 and not (lon > 35 and lat < 12): return 'africa'
+    if lon >= 25 and lat > -10 and lon < 180:
+        if lat < -35 or lon > 110 and lat < -10: pass
+        return 'asia'
+    if lon >= 110 and lat < 0: return 'oceania'
+    return 'asia'
+
+# Indonesia/Oceania split simples: nomes ilhas abaixo
+for r in regions:
+    nm = country_meta[r['country']]['name']
+    lons = [x * CELL_ARC - 180 for (x, y) in r['cells']]
+    lats = [90 - (y + 0.5) * CELL_ARC for (x, y) in r['cells']]
+    cont = classify_continent(nm, lons, lats)
+    if nm in ('Indonesia', 'Malaysia') and max(lat for lat in lats) < 8 and min(lon for lon in lons) > 95:
+        pass
+    if nm == 'Australia': cont = 'oceania'
+    if nm in ('Papua New Guinea', 'Solomon Is.', 'Vanuatu', 'Fiji', 'New Caledonia'): cont = 'oceania'
+    if nm in ('Indonesia', 'East Timor', 'Timor-Leste'): cont = 'asia'
+    r['continent'] = cont
 
 # nomes: pais + numero se multiplas ilhas
 by_country = {}
@@ -210,7 +270,7 @@ out = {
     'land': land,
     'region': region_of,
     'resources': resources,
-    'regions': [{'id': i, 'name': r['name'], 'country': r['country'], 'continent': None,
+    'regions': [{'id': i, 'name': r['name'], 'country': r['country'], 'continent': r.get('continent'),
                  'size': r['size'], 'cx': round(r['cx'], 2), 'cy': round(r['cy'], 2),
                  'neighbors': r['neighbors'], 'start': r['start'], 'biome': r['biome']}
                 for i, r in enumerate(regions)],
@@ -224,7 +284,8 @@ print('OK: %d regioes, terra=%d celulas' % (len(regions), land.count('1')))
 # preview
 try:
     from PIL import Image, ImageDraw
-    pv = Image.new('RGB', (W * 6, H * 6), (35, 78, 110))
+    PX = max(1, 1440 // W)
+    pv = Image.new('RGB', (W * PX, H * PX), (35, 78, 110))
     d = ImageDraw.Draw(pv)
     COLR = [(120, 80, 40), (150, 150, 160), (210, 60, 60), (60, 200, 160)]
     import colorsys
@@ -238,10 +299,10 @@ try:
         for x in range(W):
             rid = region_of[y][x]
             if rid >= 0:
-                d.rectangle([x*6, y*6, x*6+5, y*6+5], fill=pal[rid])
+                d.rectangle([x*PX, y*PX, x*PX+PX-1, y*PX+PX-1], fill=pal[rid])
                 rr = resources[y*W+x]
-                if rr >= 0:
-                    d.rectangle([x*6+2, y*6+2, x*6+3, y*6+3], fill=COLR[rr])
+                if rr >= 0 and PX >= 3:
+                    d.rectangle([x*PX+PX//3, y*PX+PX//3, x*PX+2*PX//3, y*PX+2*PX//3], fill=COLR[rr])
     pv.save(os.path.join(ASSETS, 'preview.png'))
     print('preview salvo')
 except ImportError:
